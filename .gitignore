@@ -220,3 +220,6 @@ config.yaml
 .vscode/
 
 **/*.ipynb
+
+*.png
+*.mp4
