@@ -97,18 +97,14 @@ class KpMonitor:
     for geomagnetic activity monitoring.
     """
 
-    IMAGE_PATH = "/Users/infantronald/work/KP index/KpAlert/mock_files/kp_swift_ensemble_LAST.png"
-    IMAGE_PATH_SWPC = "/Users/infantronald/work/KP index/KpAlert/mock_files/kp_swift_ensemble_with_swpc_LAST.png"
-    IMAGE_PATH_AURORA = "/Users/infantronald/work/KP index/KpAlert/mock_files/auroro_LAST.png"
-    CSV_PATH = "/Users/infantronald/work/KP index/KpAlert/mock_files/kp_product_file_SWIFT_LAST.csv"
-    VIDEO_PATH_AURORA = "/Users/infantronald/work/KP index/KpAlert/mock_files/aurora_forecast.mp4"
+    IMAGE_PATH = "./assets/kp_swift_ensemble_LAST.png"
+    IMAGE_PATH_SWPC = "./assets/kp_swift_ensemble_with_swpc_LAST.png"
+    CSV_PATH = "./assets/kp_product_file_SWIFT_LAST.csv"
+    VIDEO_PATH_AURORA = "./assets/aurora_forecast.mp4"
+    IMAGE_PATH_AURORA = "./assets/aurora_LAST.png"
 
     # Caption for the forecast plot (SWPC + Min-Max)
-    FORECAST_IMAGE_CAPTION = (
-        "<strong>Caption:</strong> Kp index forecast: bar colours show activity level green being quiet, yellow being moderate storm, "
-        "red being high strom. For more information refer the table below. Red dashed line = SWPC (NOAA) official Kp forecast.  "
-        "Error bars indicates the minimum-maximum spread of Kp values."
-    )
+    FORECAST_IMAGE_CAPTION = "Bar colours indicate geomagnetic activity levels: green corresponds to quiet conditions (Kp &lt; 3), yellow to moderate activity (3 &lt; Kp &le; 6), and red to high storm conditions (Kp &gt; 6). The red dashed line shows the official NOAA SWPC Kp forecast. Error bars represent the minimum-maximum spread of forecast Kp values."
 
     def __init__(self, config: MonitorConfig, log_suffix: str = "") -> None:
         self.last_alert_time = None
@@ -144,7 +140,7 @@ class KpMonitor:
 
     def copy_aurora_image(self) -> str:
         """Copy the Kp-dependent auroral intensity image to the current directory for html embedding."""
-        return shutil.copy2(self.IMAGE_PATH_AURORA, "./auroro_LAST.png")
+        return shutil.copy2(self.IMAGE_PATH_AURORA, "./aurora_LAST.png")
 
     def setup_logging(self) -> None:
         """
@@ -164,7 +160,7 @@ class KpMonitor:
 
         logging.basicConfig(
             level=self.config.log_level,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            format="[%(levelname)-8s] %(asctime)s - %(name)s:%(lineno)d - %(message)s",
             handlers=[
                 logging.FileHandler(
                     self.log_folder
@@ -272,7 +268,9 @@ class KpMonitor:
                 probability_df.drop(columns=["Time (UTC)"], inplace=True)
 
                 empty = df.iloc[0:0].copy()
-                storm_prob_df = pd.DataFrame(columns=["Time (UTC)", "Probability 6-7", "Probability 7-8", "Probability >= 8"])
+                storm_prob_df = pd.DataFrame(
+                    columns=["Time (UTC)", "Probability 6-7", "Probability 7-8", "Probability >= 8"]
+                )
                 return AnalysisResults(
                     max_kp=float("nan"),
                     max_df=max_values,
@@ -494,7 +492,9 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
         max_kp_at_finite_time = np.round(max_values.max(), 2)
 
-        max_kp_at_finite_time_status, max_kp_at_finite_time_level, _ = self.get_status_level_color(max_kp_at_finite_time)
+        max_kp_at_finite_time_status, max_kp_at_finite_time_level, _ = self.get_status_level_color(
+            max_kp_at_finite_time
+        )
         mask = probability_df["Probability"] >= 0.4
         if mask.any():
             start_time = probability_df.index[mask][0]
@@ -524,7 +524,9 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             )
         if observed_time != analysis.next_24h_forecast.index[0]:
             obs_utc = datetime.strptime(observed_time.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            obs_message_prefix = f""" (Observed Kp data available up to {obs_utc.astimezone(CET).strftime("%H:%M CET %d.%m.%Y")})"""
+            obs_message_prefix = (
+                f""" (Observed Kp data available up to {obs_utc.astimezone(CET).strftime("%H:%M CET %d.%m.%Y")})"""
+            )
         else:
             obs_message_prefix = ""
 
@@ -546,7 +548,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
 
 """
-        #message += self._kp_html_table(high_records, probability_df)
+        # message += self._kp_html_table(high_records, probability_df)
 
         # Add storm probability table if there are rows with combined prob > 50%
         storm_table = self._storm_probability_table(analysis["storm_prob_df"])
@@ -573,7 +575,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
 <div class="aurora-watch-row">
   <div class="aurora-col">
-    <img src="auroro_LAST.png" alt="Kp-dependent Auroral Intensity Prediction" class="aurora-forecast-img" />
+    <img src="aurora_LAST.png" alt="Kp-dependent Auroral Intensity Prediction" class="aurora-forecast-img" />
   </div>
   <div class="aurora-col">
     <video class="aurora-forecast-video" controls autoplay loop muted>
@@ -583,7 +585,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
   </div>
 </div>
 
-**Note:** Kp ≥ {DECIMAL_TO_KP[AURORA_KP]} indicate potential auroral activity at Berlin latitudes.
+**Note:** Kp ≥ {DECIMAL_TO_KP[AURORA_KP]} indicate potential auroral activity at Berlin latitudes. Time indicated in UTC.
 
 """
 
@@ -857,7 +859,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
                     h1 {{ color: #d9534f; font-size: 1.5rem; }}
                     h2 {{ color: #5bc0de; margin-top: 30px; font-size: 1.25rem; }}
                     h3 {{ color: #000000; font-size: 1.1rem; }}
-                    .forecast-caption {{ font-size: 12px; color: #555; margin-top: 4px; }}
+                    .forecast-caption {{ font-size: 16px; color: #444444; margin-top: 4px; }}
                     small {{ font-size: 11px; color: #333; }}
                     hr {{ border: 0; border-top: 1px solid #ddd; margin: 20px 0; }}
                     .aurora-watch-row {{ display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; }}
