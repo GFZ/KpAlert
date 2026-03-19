@@ -223,3 +223,6 @@ config.yaml
 
 *.png
 *.mp4
+*.gif
+
+**/*.env

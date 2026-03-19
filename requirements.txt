@@ -4,3 +4,4 @@ PyYAML
 typer
 ruff
 markdown
+python-dotenv
