@@ -10,6 +10,7 @@ Data Source: GFZ German Research Centre for Geosciences
 """
 
 import logging
+import os
 import re
 import shutil
 import smtplib
@@ -24,16 +25,19 @@ from pathlib import Path
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
-# Display times in CET (Europe/Berlin handles CET/CEST)
-CET = ZoneInfo("Europe/Berlin")
-
 import markdown
 import numpy as np
 import pandas as pd
 import requests
 import typer
+from dotenv import load_dotenv
 
 from src.config import MonitorConfig
+
+# Display times in CET (Europe/Berlin handles CET/CEST)
+CET = ZoneInfo("Europe/Berlin")
+
+load_dotenv("alert.env")
 
 
 @dataclass
@@ -97,14 +101,15 @@ class KpMonitor:
     for geomagnetic activity monitoring.
     """
 
-    IMAGE_PATH = "./assets/kp_swift_ensemble_LAST.png"
-    IMAGE_PATH_SWPC = "./assets/kp_swift_ensemble_with_swpc_LAST.png"
-    CSV_PATH = "./assets/kp_product_file_SWIFT_LAST.csv"
-    VIDEO_PATH_AURORA = "./assets/aurora_forecast.mp4"
-    IMAGE_PATH_AURORA = "./assets/aurora_LAST.png"
+    IMAGE_PATH = os.environ.get("IMAGE_PATH", "./assets/kp_swift_ensemble_LAST.png")
+    IMAGE_PATH_SWPC = os.environ.get("IMAGE_PATH_SWPC", "./assets/kp_swift_ensemble_with_swpc_LAST.png")
+    CSV_PATH = os.environ.get("CSV_PATH", "./assets/kp_product_file_SWIFT_LAST.csv")
+    VIDEO_PATH_AURORA = os.environ.get("VIDEO_PATH_AURORA", "./assets/aurora_forecast.mp4")
+    IMAGE_PATH_AURORA = os.environ.get("IMAGE_PATH_AURORA", "./assets/aurora_LAST.png")
 
     # Caption for the forecast plot (SWPC + Min-Max)
     FORECAST_IMAGE_CAPTION = "Bar colours indicate geomagnetic activity levels: green corresponds to quiet conditions (Kp &lt; 3), yellow to moderate activity (3 &lt; Kp &le; 6), and red to high storm conditions (Kp &gt; 6). The red dashed line shows the official NOAA SWPC Kp forecast. Error bars represent the minimum-maximum spread of forecast Kp values."
+    AURORA_KP = 7
 
     def __init__(self, config: MonitorConfig, log_suffix: str = "") -> None:
         self.last_alert_time = None
@@ -134,13 +139,37 @@ class KpMonitor:
             return shutil.copy2(self.IMAGE_PATH_SWPC, "./kp_swift_ensemble_with_swpc_LAST.png")
         return shutil.copy2(self.IMAGE_PATH, "./kp_swift_ensemble_LAST.png")
 
-    def copy_aurora_video(self) -> str:
-        """Copy the aurora video to the current directory for html embedding."""
-        return shutil.copy2(self.VIDEO_PATH_AURORA, "./aurora_forecast.mp4")
+    def copy_aurora_gif(self) -> str | None:
+        """Get the aurora video, convert to GIF and return path to the copied file."""
+        gif_path = "./aurora_forecast.gif"
+        video_path = shutil.copy2(self.VIDEO_PATH_AURORA, "./aurora_forecast.mp4")
+        return self.convert_video_to_gif(video_path, gif_path)
 
-    def copy_aurora_image(self) -> str:
-        """Copy the Kp-dependent auroral intensity image to the current directory for html embedding."""
-        return shutil.copy2(self.IMAGE_PATH_AURORA, "./aurora_LAST.png")
+    def copy_aurora_image_at_current_time(self) -> str | None:
+        """Get the aurora image corresponding to the current time."""
+
+        current_time_YYYY = self.current_utc_time.strftime("%Y")
+        current_time_MM = self.current_utc_time.strftime("%m")
+        current_time_DD = self.current_utc_time.strftime("%d")
+        current_time_HH = self.current_utc_time.strftime("%H")
+        aurora_YYYY_MM_filename = f"{current_time_YYYY}/{current_time_MM}/{current_time_YYYY}{current_time_MM}{current_time_DD}_{current_time_HH}"
+
+        aurora_image_full_path = Path(self.IMAGE_PATH_AURORA) / f"{aurora_YYYY_MM_filename}.png"
+
+        if aurora_image_full_path.exists():
+            return shutil.copy2(aurora_image_full_path, "./aurora_LAST.png")
+        else:
+            self.logger.warning(f"Aurora image for current time not found: {aurora_image_full_path}.")
+            return None
+
+    def should_include_aurora_watch(self, high_records: pd.DataFrame) -> bool:
+        """Return True when the message should include the aurora watch section."""
+        high_records_above_threshold = high_records[
+            (high_records["minimum"].astype(float) >= self.AURORA_KP)
+            | (high_records["median"].astype(float) >= self.AURORA_KP)
+            | (high_records["maximum"].astype(float) >= self.AURORA_KP)
+        ]
+        return not high_records_above_threshold.empty
 
     def setup_logging(self) -> None:
         """
@@ -461,6 +490,23 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             self.logger.error(f"Error fetching observed Kp data: {e}", exc_info=True)
             return None
 
+    def convert_video_to_gif(self, video_path: str, output_path: str = "./aurora_forecast.gif",
+                            fps: int = 5) -> str | None:
+        import subprocess
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-i", video_path,
+                    "-lavfi", f"fps={fps},split[s0][s1];[s0]palettegen=max_colors=16[p];[s1][p]paletteuse",
+
+
+                output_path,
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            self.logger.info(f"GIF created: {output_path} ({Path(output_path).stat().st_size / 1024:.0f} KB)")
+            return output_path
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"ffmpeg GIF conversion failed: {e.stderr.decode()}")
+            return None
     def create_message(self, analysis: AnalysisResults) -> str:
         """
         Create formatted alert message for high Kp conditions using Markdown.
@@ -517,7 +563,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         start_cet = start_time.tz_convert(CET)
         end_cet = end_time.tz_convert(CET)
         if start_time == end_time:
-            message_prefix = f"""At {start_cet.strftime("%H:%M (CET) %d.%m.%Y")} """
+            message_prefix = f"""At {start_cet.strftime("%H:%M (CET) %d.%m.%Y")}"""
         else:
             message_prefix = (
                 f"""From {start_cet.strftime("%H:%M (CET) %d.%m.%Y")}  to {end_cet.strftime("%H:%M (CET) %d.%m.%Y")}"""
@@ -548,8 +594,6 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
 
 """
-        # message += self._kp_html_table(high_records, probability_df)
-
         # Add storm probability table if there are rows with combined prob > 50%
         storm_table = self._storm_probability_table(analysis["storm_prob_df"])
         if storm_table:
@@ -562,30 +606,20 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         message += "\n"
 
         # Then optionally add the aurora watch section
-        AURORA_KP = 7
-        high_records_above_threshold = high_records[
-            (high_records["minimum"].astype(float) >= AURORA_KP)
-            | (high_records["median"].astype(float) >= AURORA_KP)
-            | (high_records["maximum"].astype(float) >= AURORA_KP)
-        ]
-
-        if not high_records_above_threshold.empty:
+        if self.should_include_aurora_watch(high_records):
             message += f"""
 ## **AURORA WATCH:**
 
 <div class="aurora-watch-row">
   <div class="aurora-col">
-    <img src="aurora_LAST.png" alt="Kp-dependent Auroral Intensity Prediction" class="aurora-forecast-img" />
+  <img src="cid:aurora_image" alt="Kp-dependent Auroral Intensity Prediction" class="aurora-forecast-img" />
   </div>
   <div class="aurora-col">
-    <video class="aurora-forecast-video" controls autoplay loop muted>
-      <source src="aurora_forecast.mp4" type="video/mp4">
-      Your browser does not support the video tag.
-    </video>
+    <img src="cid:aurora_vid" alt="Kp-dependent Auroral Intensity Prediction" class="aurora-forecast-img" />
   </div>
 </div>
 
-**Note:** Kp ≥ {DECIMAL_TO_KP[AURORA_KP]} indicate potential auroral activity at Berlin latitudes. Time indicated in UTC.
+**Note:** Kp ≥ {DECIMAL_TO_KP[self.AURORA_KP]} indicate potential auroral activity at Berlin latitudes. Time indicated in UTC.
 
 """
 
@@ -769,13 +803,19 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
             message = self.create_message(analysis)
             subject = self.create_subject(analysis)
+            include_aurora_watch = self.should_include_aurora_watch(analysis["high_kp_records"])
 
             _ = self.copy_image()
-            self.LOCAL_AURORA_VIDEO_PATH = self.copy_aurora_video()
-            _ = self.copy_aurora_image()
+            self.LOCAL_AURORA_VIDEO_PATH = None
+            if include_aurora_watch:
+                self.LOCAL_AURORA_VIDEO_PATH = self.copy_aurora_gif()
+                _ = self.copy_aurora_image_at_current_time()
             email_sent = self.send_alert(subject, message)
             message_for_file = markdown.markdown(
-                message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH),
+                message
+                    .replace("cid:forecast_image", self.LOCAL_IMAGE_PATH)
+                    .replace("cid:aurora_image", "./aurora_LAST.png")
+                    .replace("cid:aurora_vid", "./aurora_forecast.gif"),
                 extensions=["tables", "fenced_code", "footnotes", "nl2br"],
             )
             html_output = self.basic_html_format(message_for_file)
@@ -838,6 +878,26 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             img.add_header("Content-ID", "<forecast_image>")
             img.add_header("Content-Disposition", "inline", filename="forecast_image.png")
             msg_root.attach(img)
+
+        include_aurora_image = "cid:aurora_image" in message
+        include_aurora_video = "cid:aurora_vid" in message
+
+        aurora_path = "./aurora_LAST.png"
+        if include_aurora_image and Path(aurora_path).exists():
+            with open(aurora_path, "rb") as f:
+                aurora_img = MIMEImage(f.read())
+                aurora_img.add_header("Content-ID", "<aurora_image>")
+                aurora_img.add_header("Content-Disposition", "inline", filename="aurora_image.png")
+                msg_root.attach(aurora_img)
+
+        aurora_path = "./aurora_forecast.gif"
+        if include_aurora_video and Path(aurora_path).exists():
+            with open(aurora_path, "rb") as f:
+                aurora_img = MIMEImage(f.read())
+                aurora_img.add_header("Content-ID", "<aurora_vid>")
+                aurora_img.add_header("Content-Disposition", "inline", filename="aurora_forecast.gif")
+                msg_root.attach(aurora_img)
+
 
         # Note: Video attachments are not well supported in email clients
         # The video will be available in the generated HTML file
