@@ -9,6 +9,8 @@ Data Source: GFZ German Research Centre for Geosciences
 
 """
 
+from tensorboard.compat.tensorflow_stub import AssetFileDef
+
 import logging
 import os
 import re
@@ -34,8 +36,9 @@ from dotenv import load_dotenv
 
 from src.config import MonitorConfig
 
-# Display times in CET (Europe/Berlin handles CET/CEST)
-CET = ZoneInfo("Europe/Berlin")
+# Display times in utc (Europe/Berlin handles utc/CEST)
+ETC = ZoneInfo("Europe/Berlin")
+utc = UTC = ZoneInfo("UTC")
 
 load_dotenv("alert.env")
 
@@ -108,7 +111,7 @@ class KpMonitor:
     IMAGE_PATH_AURORA = os.environ.get("IMAGE_PATH_AURORA", "./assets/aurora_LAST.png")
 
     # Caption for the forecast plot (SWPC + Min-Max)
-    FORECAST_IMAGE_CAPTION = "Bar colours indicate geomagnetic activity levels: green corresponds to quiet conditions (Kp &lt; 3), yellow to moderate activity (3 &lt; Kp &le; 6), and red to high storm conditions (Kp &gt; 6). The red dashed line shows the official NOAA SWPC Kp forecast. Error bars represent the minimum-maximum spread of forecast Kp values."
+    FORECAST_IMAGE_CAPTION = "Bar colours indicate geomagnetic activity levels: green corresponds to quiet conditions (Kp &lt; 3), yellow to moderate activity (3 &lt; Kp &le; 6), and red to high storm conditions (Kp &gt; 6). The red dashed line shows the official NOAA SWPC Kp forecast. Error bars represent the minimum-maximum spread of forecasted Kp values."
     AURORA_KP = 7
 
     def __init__(self, config: MonitorConfig, log_suffix: str = "") -> None:
@@ -246,7 +249,7 @@ class KpMonitor:
         kp_members = []
 
         for i in range(20):
-            vals = np.round(np.random.choice(np.linspace(0, 9, 28), len(time_index)), 2)
+            vals = np.round(np.random.choice(np.linspace(4, 9, 28), len(time_index)), 2)
             data[f"kp_{i}"] = vals
             kp_members.append(vals)
 
@@ -283,6 +286,13 @@ class KpMonitor:
         `AnalysisResults`
             `AnalysisResults` containing analysis results with keys as described in the `AnalysisResults` dataclass
         """
+
+        try:
+            assert ((df["prob 4-5"] + df["prob 5-6"] + df["prob 6-7"] + df["prob 7-8"] + df["prob >= 8"]) <= 1.0).all()
+        except AssertionError:
+            msg = "Combined probabilities exceed 1"
+            self.logger.error(msg)
+
         try:
             # Get current maximum values
             self.logger.info(f"Current UTC Time: {self.current_utc_time}")
@@ -386,7 +396,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
     def _kp_html_table(self, record: pd.DataFrame, probabilities: pd.DataFrame) -> str:
         """Generate markdown table for Kp index records."""
         table = f"""
-| Time (CET) | Probability (Kp ≥ {self.kp_threshold_str}) | Min Kp Index<sup>[<a href="#fn1">1</a>]</sup> | Max Kp Index<sup>[<a href="#fn2">2</a>]</sup> | Median Kp Index<sup>[<a href="#fn3">3</a>]</sup> | Activity<sup>[<a href="#fn4">4</a>][<a href="#fn5">5</a>]</sup> |
+| Time (UTC) | Probability (Kp ≥ {self.kp_threshold_str}) | Min Kp Index<sup>[<a href="#fn1">1</a>]</sup> | Max Kp Index<sup>[<a href="#fn2">2</a>]</sup> | Median Kp Index<sup>[<a href="#fn3">3</a>]</sup> | Activity<sup>[<a href="#fn4">4</a>][<a href="#fn5">5</a>]</sup> |
 |------------|-------------------------------------------|------------------|------------------|---------------------|------------------|
 """
         for _, row in record.iterrows():
@@ -399,7 +409,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             time_idx = row["Time (UTC)"]
             prob = probabilities.loc[time_idx, "Probability"]
 
-            time_str = row["Time (UTC)"].tz_convert(CET).strftime("%d.%m.%Y %H:%M")
+            time_str = row["Time (UTC)"].tz_convert(utc).strftime("%d.%m.%Y %H:%M")
             prob_str = f"{prob * 100:.0f}%"
             activity_str = f'<span style="color: {color_min};">{level_min}</span> - <span style="color: {color_max};">{level_max}</span>'
 
@@ -430,15 +440,15 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         table = """
 ## STORM PROBABILITY FORECAST (Kp ≥ 6)
 
-| Time (CET) | Probability of kp 6-7 | Probability of kp 7-8 | Probability of kp ≥8 |
+| Time (UTC) | Probability of kp 6-7 | Probability of kp 7-8 | Probability of kp ≥8 |
 |------------|----------|----------|---------|
 """
         for idx, row in filtered_rows:
-            time_cet = idx.tz_convert(CET).strftime("%d.%m.%Y %H:%M")
+            time_utc = idx.tz_convert(UTC).strftime("%d.%m.%Y %H:%M")
             prob_6_7 = f"{row['prob 6-7'] * 100:.0f}%"
             prob_7_8 = f"{row['prob 7-8'] * 100:.0f}%"
             prob_8_plus = f"{row['prob >= 8'] * 100:.0f}%"
-            table += f"| {time_cet} | {prob_6_7} | {prob_7_8} | {prob_8_plus} |\n"
+            table += f"| {time_utc} | {prob_6_7} | {prob_7_8} | {prob_8_plus} |\n"
 
         table += "\n*Showing timestamps where combined probability of Kp ≥ 6 exceeds 50%*\n"
         return table
@@ -467,7 +477,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
                 end_date_str = (start + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 url = f"https://kp.gfz.de/app/json/?start={start_date_str}&end={end_date_str}&index=Kp"
 
-                self.logger.info(f"Fetching observed Kp data from {start_date_str} to {end_date_str}")
+                self.logger.info(f"Fetching observed Kp from {start_date_str} to {end_date_str}")
 
                 response = requests.get(url)
                 response.raise_for_status()
@@ -475,30 +485,34 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
                 data = response.json()
 
                 if len(data.get("Kp", [])) > 0:
-                    self.logger.info(f"Observed Kp data found for {data['datetime'][0]} : {data['Kp'][0]}")
+                    self.logger.info(f"Observed Kp found for {data['datetime'][0]} : {data['Kp'][0]}")
                     return data["datetime"][0], data["Kp"][0]
 
                 else:
-                    self.logger.warning(f"No observed Kp data found for {start_date_str}, shifting 3 hours back")
+                    self.logger.warning(f"No observed Kp found for {start_date_str}, shifting 3 hours back")
                     start -= timedelta(hours=3)
                     attempts += 1
 
-            self.logger.warning("No observed Kp data found after multiple shifts")
+            self.logger.warning("No observed Kp found after multiple shifts")
             return None
 
         except Exception as e:
-            self.logger.error(f"Error fetching observed Kp data: {e}", exc_info=True)
+            self.logger.error(f"Error fetching observed Kp: {e}", exc_info=True)
             return None
 
-    def convert_video_to_gif(self, video_path: str, output_path: str = "./aurora_forecast.gif",
-                            fps: int = 5) -> str | None:
+    def convert_video_to_gif(
+        self, video_path: str, output_path: str = "./aurora_forecast.gif", fps: int = 5
+    ) -> str | None:
         import subprocess
+
         try:
             cmd = [
-                "ffmpeg", "-y", "-i", video_path,
-                    "-lavfi", f"fps={fps},split[s0][s1];[s0]palettegen=max_colors=16[p];[s1][p]paletteuse",
-
-
+                "ffmpeg",
+                "-y",
+                "-i",
+                video_path,
+                "-lavfi",
+                f"fps={fps},split[s0][s1];[s0]palettegen=max_colors=16[p];[s1][p]paletteuse",
                 output_path,
             ]
             subprocess.run(cmd, check=True, capture_output=True)
@@ -507,6 +521,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"ffmpeg GIF conversion failed: {e.stderr.decode()}")
             return None
+
     def create_message(self, analysis: AnalysisResults) -> str:
         """
         Create formatted alert message for high Kp conditions using Markdown.
@@ -560,18 +575,18 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         start_time_kp_min_status, _, _ = self.get_status_level_color(high_records.loc[start_time]["minimum"].min())
         end_time_kp_max_status, _, _ = self.get_status_level_color(high_records.loc[end_time]["maximum"].max())
 
-        start_cet = start_time.tz_convert(CET)
-        end_cet = end_time.tz_convert(CET)
+        start_utc = start_time.tz_convert(utc)
+        end_utc = end_time.tz_convert(utc)
         if start_time == end_time:
-            message_prefix = f"""At {start_cet.strftime("%H:%M (CET) %d.%m.%Y")}"""
+            message_prefix = f"""At {start_utc.strftime("%H:%M (UTC) %d.%m.%Y")}"""
         else:
             message_prefix = (
-                f"""From {start_cet.strftime("%H:%M (CET) %d.%m.%Y")}  to {end_cet.strftime("%H:%M (CET) %d.%m.%Y")}"""
+                f"""From {start_utc.strftime("%H:%M (UTC) %d.%m.%Y")}  to {end_utc.strftime("%H:%M (UTC) %d.%m.%Y")}"""
             )
         if observed_time != analysis.next_24h_forecast.index[0]:
             obs_utc = datetime.strptime(observed_time.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             obs_message_prefix = (
-                f""" (Observed Kp data available up to {obs_utc.astimezone(CET).strftime("%H:%M CET %d.%m.%Y")})"""
+                f""" (Observed Kp available up to {obs_utc.astimezone(utc).strftime("%H:%M (UTC) %d.%m.%Y")})"""
             )
         else:
             obs_message_prefix = ""
@@ -582,11 +597,11 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         message = f"""<h2 style="color: #d9534f;">SPACE WEATHER ALERT - {end_time_kp_max_status} ({max_kp_at_finite_time_level}) with probability ≥ {prob_at_start_time * 100:.0f}% predicted</h2>
 
 
-### {message_prefix}, space weather can reach {end_time_kp_max_status} with Kp {kp_comparison} {DECIMAL_TO_KP[max_kp_at_finite_time]} with probability ≥ {prob_at_start_time * 100:.0f}%.
+### {message_prefix}, Geomagnetic Activity can reach {end_time_kp_max_status} with Kp {kp_comparison} {DECIMAL_TO_KP[max_kp_at_finite_time]} with probability ≥ {prob_at_start_time * 100:.0f}%.
 
 **Current Conditions:** {observed_status.replace("CONDITIONS", "")} {obs_message_prefix}
 
-**Alert sent at:** {datetime.now(timezone.utc).astimezone(CET).strftime("%H:%M CET %d.%m.%Y ")}
+**Alert sent at:** {datetime.now(timezone.utc).astimezone(utc).strftime("%H:%M (UTC) %d.%m.%Y ")}
 
 ![Forecast Image](cid:forecast_image)
 
@@ -644,7 +659,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         _, level_min, _ = self.get_status_level_color(analysis["high_kp_records"]["minimum"].max())
         _, level_max, _ = self.get_status_level_color(analysis["high_kp_records"]["maximum"].max())
 
-        subject = f"Predicted Geomagnetic Activity from {level_min} - {level_max}"
+        subject = f"Predicted Geomagnetic Activity: {level_min} - {level_max}"
         return subject.strip()
 
     def get_storm_level_description_table(self) -> str:
@@ -812,10 +827,9 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
                 _ = self.copy_aurora_image_at_current_time()
             email_sent = self.send_alert(subject, message)
             message_for_file = markdown.markdown(
-                message
-                    .replace("cid:forecast_image", self.LOCAL_IMAGE_PATH)
-                    .replace("cid:aurora_image", "./aurora_LAST.png")
-                    .replace("cid:aurora_vid", "./aurora_forecast.gif"),
+                message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH)
+                .replace("cid:aurora_image", "./aurora_LAST.png")
+                .replace("cid:aurora_vid", "./aurora_forecast.gif"),
                 extensions=["tables", "fenced_code", "footnotes", "nl2br"],
             )
             html_output = self.basic_html_format(message_for_file)
@@ -897,7 +911,6 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
                 aurora_img.add_header("Content-ID", "<aurora_vid>")
                 aurora_img.add_header("Content-Disposition", "inline", filename="aurora_forecast.gif")
                 msg_root.attach(aurora_img)
-
 
         # Note: Video attachments are not well supported in email clients
         # The video will be available in the generated HTML file
