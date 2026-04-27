@@ -9,8 +9,6 @@ Data Source: GFZ German Research Centre for Geosciences
 
 """
 
-from tensorboard.compat.tensorflow_stub import AssetFileDef
-
 import logging
 import os
 import re
@@ -111,7 +109,7 @@ class KpMonitor:
     IMAGE_PATH_AURORA = os.environ.get("IMAGE_PATH_AURORA", "./assets/aurora_LAST.png")
 
     # Caption for the forecast plot (SWPC + Min-Max)
-    FORECAST_IMAGE_CAPTION = "Bar colours indicate geomagnetic activity levels: green corresponds to quiet conditions (Kp &lt; 3), yellow to moderate activity (3 &lt; Kp &le; 6), and red to high storm conditions (Kp &gt; 6). The red dashed line shows the official NOAA SWPC Kp forecast. Error bars represent the minimum-maximum spread of forecasted Kp values."
+    FORECAST_IMAGE_CAPTION = "Colours indicate geomagnetic activity levels: green corresponds to quiet conditions (Kp &lt; 3), yellow to moderate activity (3 &lt; Kp &le; 6), and red to storm conditions (Kp &gt; 6). The red dashed line shows the official NOAA SWPC Kp forecast. Error bars represent the minimum-maximum spread of forecasted Kp values."
     AURORA_KP = 7
 
     def __init__(self, config: MonitorConfig, log_suffix: str = "") -> None:
@@ -426,7 +424,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
     def _storm_probability_table(self, storm_prob_df: pd.DataFrame) -> str:
         """Generate markdown table for storm probabilities (Kp 6-7, 7-8, >=8)."""
         if storm_prob_df.empty:
-            return ""
+            return None
 
         filtered_rows = []
         for idx, row in storm_prob_df.iterrows():
@@ -435,7 +433,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
                 filtered_rows.append((idx, row))
 
         if not filtered_rows:
-            return ""
+            return None
 
         table = """
 ## STORM PROBABILITY FORECAST (Kp ≥ 6)
@@ -627,9 +625,6 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
 <div class="aurora-watch-row">
   <div class="aurora-col">
-  <img src="cid:aurora_image" alt="Kp-dependent Auroral Intensity Prediction" class="aurora-forecast-img" />
-  </div>
-  <div class="aurora-col">
     <img src="cid:aurora_vid" alt="Kp-dependent Auroral Intensity Prediction" class="aurora-forecast-img" />
   </div>
 </div>
@@ -640,9 +635,9 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
 
         message += self.footer()
 
-        return message.strip()
+        return message.strip(), prob_at_start_time
 
-    def create_subject(self, analysis: AnalysisResults) -> str:
+    def create_subject(self, analysis: AnalysisResults, prob_at_start_time: float) -> str:
         """
         Create email subject line based on analysis results.
 
@@ -656,10 +651,10 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         subject : str
             Email subject line
         """
-        _, level_min, _ = self.get_status_level_color(analysis["high_kp_records"]["minimum"].max())
-        _, level_max, _ = self.get_status_level_color(analysis["high_kp_records"]["maximum"].max())
+        # _, level_min, _ = self.get_status_level_color(analysis["high_kp_records"]["minimum"].max())
+        status_max, level_max, _ = self.get_status_level_color(analysis["high_kp_records"]["maximum"].max())
 
-        subject = f"Predicted Geomagnetic Activity: {level_min} - {level_max}"
+        subject = f"Alert: {status_max} predicted with probability ≥ {prob_at_start_time * 100:.0f}%."
         return subject.strip()
 
     def get_storm_level_description_table(self) -> str:
@@ -816,8 +811,9 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
         if self.should_send_alert(analysis):
             max_kp = analysis["max_kp"]
 
-            message = self.create_message(analysis)
-            subject = self.create_subject(analysis)
+            message, prob_at_start_time = self.create_message(analysis)
+            subject = self.create_subject(analysis, prob_at_start_time)
+            self.logger.info(f"Sending with subject: {subject}")
             include_aurora_watch = self.should_include_aurora_watch(analysis["high_kp_records"])
 
             _ = self.copy_image()
@@ -828,7 +824,7 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             email_sent = self.send_alert(subject, message)
             message_for_file = markdown.markdown(
                 message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH)
-                .replace("cid:aurora_image", "./aurora_LAST.png")
+                # .replace("cid:aurora_image", "./aurora_LAST.png")
                 .replace("cid:aurora_vid", "./aurora_forecast.gif"),
                 extensions=["tables", "fenced_code", "footnotes", "nl2br"],
             )
@@ -893,16 +889,17 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             img.add_header("Content-Disposition", "inline", filename="forecast_image.png")
             msg_root.attach(img)
 
-        include_aurora_image = "cid:aurora_image" in message
+        # include_aurora_image = "cid:aurora_image" in message
+        include_aurora_image = False
         include_aurora_video = "cid:aurora_vid" in message
 
-        aurora_path = "./aurora_LAST.png"
-        if include_aurora_image and Path(aurora_path).exists():
-            with open(aurora_path, "rb") as f:
-                aurora_img = MIMEImage(f.read())
-                aurora_img.add_header("Content-ID", "<aurora_image>")
-                aurora_img.add_header("Content-Disposition", "inline", filename="aurora_image.png")
-                msg_root.attach(aurora_img)
+        # aurora_path = "./aurora_LAST.png"
+        # if include_aurora_image and Path(aurora_path).exists():
+        #     with open(aurora_path, "rb") as f:
+        #         aurora_img = MIMEImage(f.read())
+        #         aurora_img.add_header("Content-ID", "<aurora_image>")
+        #         aurora_img.add_header("Content-Disposition", "inline", filename="aurora_image.png")
+        #         msg_root.attach(aurora_img)
 
         aurora_path = "./aurora_forecast.gif"
         if include_aurora_video and Path(aurora_path).exists():
@@ -937,7 +934,6 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
                     hr {{ border: 0; border-top: 1px solid #ddd; margin: 20px 0; }}
                     .aurora-watch-row {{ display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; }}
                     .aurora-col {{ flex: 1 1 0; min-width: 280px; }}
-                    .aurora-forecast-img {{ width: 100%; height: auto; display: block; }}
                     .aurora-forecast-video {{ width: 100%; height: auto; display: block; }}
                 </style>
             </head>
