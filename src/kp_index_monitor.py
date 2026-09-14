@@ -194,7 +194,7 @@ class KpMonitor:
             handlers=[
                 logging.FileHandler(
                     self.log_folder
-                    / f"kp_monitor_{self.log_suffix}_{datetime.now(timezone.utc).strftime('%Y%d%m')}.log"
+                    / f"kp_monitor_{self.log_suffix}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.log"
                 ),
                 logging.StreamHandler(),
             ],
@@ -819,8 +819,11 @@ In no event will GFZ be liable for any damages direct, indirect, incidental, or 
             _ = self.copy_image()
             self.LOCAL_AURORA_VIDEO_PATH = None
             if include_aurora_watch:
-                self.LOCAL_AURORA_VIDEO_PATH = self.copy_aurora_gif()
-                _ = self.copy_aurora_image_at_current_time()
+                try:
+                    self.LOCAL_AURORA_VIDEO_PATH = self.copy_aurora_gif()
+                    _ = self.copy_aurora_image_at_current_time()
+                except Exception as e:
+                    self.logger.exception(f"Error copying aurora gif: {e}")
             email_sent = self.send_alert(subject, message)
             message_for_file = markdown.markdown(
                 message.replace("cid:forecast_image", self.LOCAL_IMAGE_PATH)
